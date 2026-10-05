@@ -1,0 +1,16 @@
+{
+  "name": "Family View Numpad",
+  "author": "Renaud Lefevre",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "utility",
+      "gamepadui",
+      "family-view",
+      "numpad"
+    ],
+    "description": "Displays a virtual on-screen numpad directly in the SteamOS Family View PIN modal for convenient touchscreen and gamepad PIN entry.",
+    "image": "https://raw.githubusercontent.com/SteamDeckHomebrew/decky-plugin-template/main/.github/preview.png"
+  }
+}
