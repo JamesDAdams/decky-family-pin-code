@@ -1,14 +1,19 @@
 /**
- * Utility to simulate keyboard inputs and interact directly with SteamOS Family View PIN modal.
+ * Input simulator & Steam Parental API integration for SteamOS Family View PIN modal.
  */
 
-export interface KeyPressOptions {
-  autoSubmitOn4Digits?: boolean;
+declare global {
+  interface Window {
+    SteamClient?: {
+      Parental?: {
+        UnlockParentalLock: (pin: string, remember: boolean) => Promise<number>;
+        LockParentalLock: () => Promise<number>;
+      };
+      User?: any;
+    };
+  }
 }
 
-/**
- * Checks whether an element belongs to Decky's own UI (e.g. QAM, Preview) to avoid false positives.
- */
 export function isDeckyUIElement(el: HTMLElement | null): boolean {
   if (!el) return false;
   return Boolean(
@@ -18,9 +23,35 @@ export function isDeckyUIElement(el: HTMLElement | null): boolean {
   );
 }
 
-/**
- * Dispatches simulated keyboard events (keydown, keypress, keyup) for a specific key.
- */
+export function getParentalAPI(): { UnlockParentalLock: (pin: string, remember: boolean) => Promise<number> } | null {
+  const win = typeof window !== "undefined" ? window : null;
+  if (win?.SteamClient?.Parental) {
+    return win.SteamClient.Parental;
+  }
+  const topWin = win?.top as any;
+  if (topWin?.SteamClient?.Parental) {
+    return topWin.SteamClient.Parental;
+  }
+  const parentWin = win?.parent as any;
+  if (parentWin?.SteamClient?.Parental) {
+    return parentWin.SteamClient.Parental;
+  }
+  return null;
+}
+
+export async function unlockWithParentalAPI(pin: string): Promise<boolean> {
+  const api = getParentalAPI();
+  if (api) {
+    try {
+      const res = await api.UnlockParentalLock(pin, true);
+      return res === 1;
+    } catch (e) {
+      console.warn("[FamilyViewNumpad] UnlockParentalLock call failed:", e);
+    }
+  }
+  return false;
+}
+
 export function dispatchKeyEvent(
   target: HTMLElement | Window | Document,
   key: string,
@@ -51,13 +82,10 @@ export function dispatchKeyEvent(
   return !prevented;
 }
 
-/**
- * Finds the active modal container in the DOM.
- */
-export function getFamilyViewModalContainer(): HTMLElement | null {
+export function getFamilyViewModalContainer(rootDoc: Document = document): HTMLElement | null {
   const candidates = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      'div[class*="Dialog"], div[class*="Modal"], div[class*="familyview"], div[role="dialog"], .DialogContent, .ModalPosition, .DialogControlsSection'
+    rootDoc.querySelectorAll<HTMLElement>(
+      'div[class*="ParentalPINDialog"], div[class*="DigitInputField"], div[class*="Dialog"], div[class*="Modal"], div[class*="familyview"], div[role="dialog"], .DialogContent, .ModalPosition, .DialogControlsSection'
     )
   );
 
@@ -65,32 +93,40 @@ export function getFamilyViewModalContainer(): HTMLElement | null {
     if (isDeckyUIElement(el)) continue;
 
     const text = (el.innerText || el.textContent || "").toLowerCase();
-    if (
-      (text.includes("family view") || text.includes("mode famille") || text.includes("famille")) &&
-      (text.includes("pin") || text.includes("enter") || text.includes("entrer") || text.includes("exit"))
-    ) {
-      const dialog = el.closest<HTMLElement>('div[role="dialog"], div[class*="Modal_"], div[class*="Dialog_"]') || el;
+    const isClassMatch =
+      el.className &&
+      typeof el.className === "string" &&
+      (el.className.includes("ParentalPINDialog") || el.className.includes("DigitInputField"));
+
+    const hasFamilyText =
+      text.includes("family view") ||
+      text.includes("mode famille") ||
+      text.includes("parental") ||
+      text.includes("contrôle parental") ||
+      text.includes("famille");
+
+    const hasPinText =
+      text.includes("pin") ||
+      text.includes("enter") ||
+      text.includes("entrer") ||
+      text.includes("exit") ||
+      text.includes("quitter");
+
+    const hasPinBoxes =
+      el.querySelectorAll('input, [class*="PinDigit"], [class*="pin_digit"], [class*="DigitInputField"]').length >= 1;
+
+    if (isClassMatch || (hasFamilyText && (hasPinText || hasPinBoxes))) {
+      const dialog =
+        el.closest<HTMLElement>('div[role="dialog"], div[class*="Modal_"], div[class*="Dialog_"]') || el;
       if (!isDeckyUIElement(dialog)) {
         return dialog;
       }
     }
   }
 
-  const allDialogs = Array.from(document.querySelectorAll<HTMLElement>('div[role="dialog"], .DialogContent, div[class*="Dialog"]'));
-  for (const dialog of allDialogs) {
-    if (isDeckyUIElement(dialog)) continue;
-    const text = (dialog.innerText || "").toLowerCase();
-    if (text.includes("pin") || text.includes("family")) {
-      return dialog;
-    }
-  }
-
   return null;
 }
 
-/**
- * Helper to trigger React's synthetic input tracker when setting .value directly
- */
 function setNativeInputValue(element: HTMLInputElement, value: string) {
   const valueSetter = Object.getOwnPropertyDescriptor(element, "value")?.set;
   const prototype = Object.getPrototypeOf(element);
@@ -108,16 +144,19 @@ function setNativeInputValue(element: HTMLInputElement, value: string) {
   element.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-/**
- * Handles typing a numeric digit (0-9) into the modal.
- */
 export function sendDigit(digit: number | string, modalElement?: HTMLElement | null): void {
   const digitStr = String(digit);
   const keyCode = 48 + parseInt(digitStr, 10);
   const code = `Digit${digitStr}`;
   const modal = modalElement || getFamilyViewModalContainer() || document.body;
+  const targetDoc = modal.ownerDocument || document;
+  const targetWin = targetDoc.defaultView || window;
 
-  const inputs = Array.from(modal.querySelectorAll<HTMLInputElement>('input[type="text"], input[type="password"], input[type="number"], input:not([type])'));
+  const inputs = Array.from(
+    modal.querySelectorAll<HTMLInputElement>(
+      'input[type="text"], input[type="password"], input[type="number"], input:not([type])'
+    )
+  );
 
   if (inputs.length === 1) {
     const input = inputs[0];
@@ -126,7 +165,7 @@ export function sendDigit(digit: number | string, modalElement?: HTMLElement | n
       setNativeInputValue(input, input.value + digitStr);
     }
   } else if (inputs.length >= 4) {
-    const activeIndex = inputs.findIndex((inp) => inp === document.activeElement || inp.value === "");
+    const activeIndex = inputs.findIndex((inp) => inp === targetDoc.activeElement || inp.value === "");
     const targetInput = activeIndex !== -1 ? inputs[activeIndex] : inputs[inputs.length - 1];
     targetInput.focus();
     setNativeInputValue(targetInput, digitStr);
@@ -136,20 +175,23 @@ export function sendDigit(digit: number | string, modalElement?: HTMLElement | n
     }
   }
 
-  const activeEl = (document.activeElement as HTMLElement) || modal;
+  const activeEl = (targetDoc.activeElement as HTMLElement) || modal;
   dispatchKeyEvent(activeEl, digitStr, code, keyCode);
   if (modal !== activeEl) {
     dispatchKeyEvent(modal, digitStr, code, keyCode);
   }
-  dispatchKeyEvent(window, digitStr, code, keyCode);
+  dispatchKeyEvent(targetWin, digitStr, code, keyCode);
 }
 
-/**
- * Handles Backspace key (delete last entered digit).
- */
 export function sendBackspace(modalElement?: HTMLElement | null): void {
   const modal = modalElement || getFamilyViewModalContainer() || document.body;
-  const inputs = Array.from(modal.querySelectorAll<HTMLInputElement>('input[type="text"], input[type="password"], input[type="number"], input:not([type])'));
+  const targetDoc = modal.ownerDocument || document;
+  const targetWin = targetDoc.defaultView || window;
+  const inputs = Array.from(
+    modal.querySelectorAll<HTMLInputElement>(
+      'input[type="text"], input[type="password"], input[type="number"], input:not([type])'
+    )
+  );
 
   if (inputs.length === 1) {
     const input = inputs[0];
@@ -165,8 +207,8 @@ export function sendBackspace(modalElement?: HTMLElement | null): void {
         break;
       }
     }
-    if (targetIndex === -1 && document.activeElement) {
-      targetIndex = inputs.indexOf(document.activeElement as HTMLInputElement);
+    if (targetIndex === -1 && targetDoc.activeElement) {
+      targetIndex = inputs.indexOf(targetDoc.activeElement as HTMLInputElement);
     }
     if (targetIndex !== -1) {
       const targetInput = inputs[targetIndex];
@@ -175,20 +217,21 @@ export function sendBackspace(modalElement?: HTMLElement | null): void {
     }
   }
 
-  const activeEl = (document.activeElement as HTMLElement) || modal;
+  const activeEl = (targetDoc.activeElement as HTMLElement) || modal;
   dispatchKeyEvent(activeEl, "Backspace", "Backspace", 8);
   if (modal !== activeEl) {
     dispatchKeyEvent(modal, "Backspace", "Backspace", 8);
   }
-  dispatchKeyEvent(window, "Backspace", "Backspace", 8);
+  dispatchKeyEvent(targetWin, "Backspace", "Backspace", 8);
 }
 
-/**
- * Handles clearing all 4 digits.
- */
 export function sendClear(modalElement?: HTMLElement | null): void {
   const modal = modalElement || getFamilyViewModalContainer() || document.body;
-  const inputs = Array.from(modal.querySelectorAll<HTMLInputElement>('input[type="text"], input[type="password"], input[type="number"], input:not([type])'));
+  const inputs = Array.from(
+    modal.querySelectorAll<HTMLInputElement>(
+      'input[type="text"], input[type="password"], input[type="number"], input:not([type])'
+    )
+  );
 
   for (const input of inputs) {
     setNativeInputValue(input, "");
@@ -203,11 +246,10 @@ export function sendClear(modalElement?: HTMLElement | null): void {
   }
 }
 
-/**
- * Handles Confirm / Enter action to submit the PIN.
- */
 export function sendConfirm(modalElement?: HTMLElement | null): void {
   const modal = modalElement || getFamilyViewModalContainer() || document.body;
+  const targetDoc = modal.ownerDocument || document;
+  const targetWin = targetDoc.defaultView || window;
 
   const buttons = Array.from(modal.querySelectorAll<HTMLButtonElement>("button, div[role='button']"));
   const confirmBtn = buttons.find((btn) => {
@@ -219,10 +261,10 @@ export function sendConfirm(modalElement?: HTMLElement | null): void {
     confirmBtn.click();
   }
 
-  const activeEl = (document.activeElement as HTMLElement) || modal;
+  const activeEl = (targetDoc.activeElement as HTMLElement) || modal;
   dispatchKeyEvent(activeEl, "Enter", "Enter", 13);
   if (modal !== activeEl) {
     dispatchKeyEvent(modal, "Enter", "Enter", 13);
   }
-  dispatchKeyEvent(window, "Enter", "Enter", 13);
+  dispatchKeyEvent(targetWin, "Enter", "Enter", 13);
 }

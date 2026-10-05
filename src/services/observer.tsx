@@ -1,7 +1,7 @@
 import { createRoot, Root } from "react-dom/client";
 import { Numpad } from "../components/Numpad";
 import { getSettings, subscribeSettings } from "./settings";
-import { isDeckyUIElement } from "./inputSimulator";
+import { isDeckyUIElement, getFamilyViewModalContainer } from "./inputSimulator";
 import {
   injectIntoSteamTabs,
   scanInSteamTabs,
@@ -11,24 +11,91 @@ import {
 
 const CONTAINER_ID = "decky-family-view-numpad-container";
 
-interface ActiveInstance {
+export function getFocusNavController(): any {
+  if (typeof window === "undefined") return null;
+  return (window as any).GamepadNavTree?.m_context?.m_controller || (window as any).FocusNavController;
+}
+
+export function getGamepadNavigationTrees(): any[] {
+  const focusNav = getFocusNavController();
+  const context = focusNav?.m_ActiveContext || focusNav?.m_LastActiveContext;
+  return context?.m_rgGamepadNavigationTrees || [];
+}
+
+export function findSP(): Window | null {
+  if (typeof document !== "undefined" && document.title === "SP") return window;
+  const navTrees = getGamepadNavigationTrees();
+  if (Array.isArray(navTrees)) {
+    const tree = navTrees.find((x: any) => x?.m_ID === "GamepadUI_Full_Root" || x?.m_ID === "root_1_");
+    return tree?.Root?.Element?.ownerDocument?.defaultView || null;
+  }
+  return null;
+}
+
+interface ActiveMount {
+  doc: Document;
   modal: HTMLElement;
   container: HTMLElement;
   root: Root;
 }
 
-let activeInstance: ActiveInstance | null = null;
-let mutationObserver: MutationObserver | null = null;
+const activeMounts: Map<Document, ActiveMount> = new Map();
+const activeObservers: Map<Document, MutationObserver> = new Map();
 let settingsUnsubscribe: (() => void) | null = null;
+let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Checks if a given HTML element looks like the SteamOS Family View PIN modal.
+ * Discovers all active Steam Windows across the CEF environment,
+ * including SP, popup windows, and GamepadNavTree documents.
+ */
+export function getAllSteamWindows(): Window[] {
+  const windows = new Set<Window>();
+
+  if (typeof window !== "undefined") {
+    windows.add(window);
+  }
+
+  try {
+    const sp = findSP();
+    if (sp) {
+      windows.add(sp);
+    }
+  } catch (e) {}
+
+  try {
+    const navTrees = getGamepadNavigationTrees();
+    if (Array.isArray(navTrees)) {
+      for (const tree of navTrees) {
+        const win = tree?.Root?.Element?.ownerDocument?.defaultView;
+        if (win) {
+          windows.add(win);
+        }
+      }
+    }
+  } catch (e) {}
+
+  if (typeof window !== "undefined") {
+    if (window.opener) windows.add(window.opener);
+    if (window.top) windows.add(window.top);
+    if (window.parent) windows.add(window.parent);
+  }
+
+  return Array.from(windows);
+}
+
+/**
+ * Checks if a given HTML element is the SteamOS Family View PIN modal.
  */
 export function isFamilyViewModal(el: HTMLElement): boolean {
   if (!el || !(el instanceof HTMLElement)) return false;
   if (isDeckyUIElement(el)) return false;
 
   const text = (el.innerText || el.textContent || "").toLowerCase();
+
+  const isClassMatch =
+    el.className &&
+    typeof el.className === "string" &&
+    (el.className.includes("ParentalPINDialog") || el.className.includes("DigitInputField"));
 
   const hasFamilyKeyword =
     text.includes("family view") ||
@@ -48,56 +115,22 @@ export function isFamilyViewModal(el: HTMLElement): boolean {
     text.includes("entrer");
 
   const hasPinBoxes =
-    el.querySelectorAll('input[type="text"], input[type="password"], input[type="number"], input:not([type]), [class*="PinDigit"], [class*="pin_digit"]').length >= 1;
+    el.querySelectorAll('input, [class*="PinDigit"], [class*="pin_digit"], [class*="DigitInputField"]').length >= 1;
 
-  return (hasFamilyKeyword && hasPinKeyword) || (hasFamilyKeyword && hasPinBoxes);
+  return isClassMatch || (hasFamilyKeyword && hasPinKeyword) || (hasFamilyKeyword && hasPinBoxes);
 }
 
 /**
- * Scans the DOM to find the active Family View modal.
+ * Scans a document to find the active Family View modal.
  */
-export function findFamilyViewModal(): HTMLElement | null {
-  const dialogSelectors = [
-    'div[role="dialog"]',
-    'div[class*="DialogContent"]',
-    'div[class*="ModalPosition"]',
-    'div[class*="Modal_"]',
-    'div[class*="Dialog_"]',
-    'div[class*="PinDialog"]',
-    'div[class*="Parental"]',
-    '.DialogControlsSection',
-    '.DialogContent',
-  ];
-
-  const dialogs = Array.from(document.querySelectorAll<HTMLElement>(dialogSelectors.join(", ")));
-
-  for (const dialog of dialogs) {
-    if (isDeckyUIElement(dialog)) continue;
-    if (isFamilyViewModal(dialog)) {
-      const container =
-        dialog.closest<HTMLElement>('div[role="dialog"], div[class*="Modal_"], div[class*="Dialog_"]') ||
-        dialog;
-      if (!isDeckyUIElement(container)) {
-        return container;
-      }
-    }
-  }
-
-  const popups = Array.from(document.querySelectorAll<HTMLElement>("body > div, #root > div"));
-  for (const popup of popups) {
-    if (isDeckyUIElement(popup)) continue;
-    if (isFamilyViewModal(popup)) {
-      return popup;
-    }
-  }
-
-  return null;
+export function findFamilyViewModalInDoc(doc: Document): HTMLElement | null {
+  return getFamilyViewModalContainer(doc);
 }
 
 /**
  * Mounts the Numpad component inside the detected Family View modal.
  */
-export function mountNumpad(modal: HTMLElement): void {
+export function mountNumpadInDoc(doc: Document, modal: HTMLElement): void {
   const settings = getSettings();
   if (!settings.enabled) {
     return;
@@ -107,11 +140,12 @@ export function mountNumpad(modal: HTMLElement): void {
     return;
   }
 
-  if (activeInstance) {
-    unmountNumpad();
+  const existing = activeMounts.get(doc);
+  if (existing) {
+    unmountNumpadInDoc(doc);
   }
 
-  const container = document.createElement("div");
+  const container = doc.createElement("div");
   container.id = CONTAINER_ID;
   container.style.width = "100%";
   container.style.display = "flex";
@@ -120,12 +154,13 @@ export function mountNumpad(modal: HTMLElement): void {
   container.style.marginTop = "8px";
   container.style.marginBottom = "8px";
 
+  // Find insertion point inside the modal
   const buttonsSection = modal.querySelector<HTMLElement>(
     'div[class*="DialogControlsSection"], div[class*="DialogFooter"], div[class*="ButtonsRow"], div[class*="ModalFooter"]'
   );
 
   const inputsSection = modal.querySelector<HTMLElement>(
-    'div[class*="PinEntry"], div[class*="PinInput"], div[class*="InputsRow"], div[class*="DialogBody"]'
+    'div[class*="PinEntry"], div[class*="PinInput"], div[class*="DigitInputField"], div[class*="InputsRow"], div[class*="DialogBody"]'
   );
 
   if (buttonsSection && buttonsSection.parentNode) {
@@ -139,65 +174,93 @@ export function mountNumpad(modal: HTMLElement): void {
   const root = createRoot(container);
   root.render(<Numpad modalElement={modal} />);
 
-  activeInstance = {
+  activeMounts.set(doc, {
+    doc,
     modal,
     container,
     root,
-  };
+  });
 }
 
 /**
- * Unmounts the Numpad component and cleans up the DOM.
+ * Unmounts the Numpad component for a specific document.
  */
-export function unmountNumpad(): void {
-  if (activeInstance) {
+export function unmountNumpadInDoc(doc: Document): void {
+  const mount = activeMounts.get(doc);
+  if (mount) {
     try {
-      activeInstance.root.unmount();
-      if (activeInstance.container.parentNode) {
-        activeInstance.container.parentNode.removeChild(activeInstance.container);
+      mount.root.unmount();
+      if (mount.container.parentNode) {
+        mount.container.parentNode.removeChild(mount.container);
       }
     } catch (err) {
-      console.warn("[FamilyViewNumpad] Cleanup error:", err);
+      console.warn("[FamilyViewNumpad] Unmount error:", err);
     }
-    activeInstance = null;
+    activeMounts.delete(doc);
   }
 }
 
 /**
- * Checks the DOM state: mounts if modal found, unmounts if modal gone.
+ * Checks all discovered Steam documents and injects if modal is open.
  */
-export function checkAndInject(): void {
+export function scanAndInjectAllDocuments(): void {
   const settings = getSettings();
   if (!settings.enabled) {
-    if (activeInstance) {
-      unmountNumpad();
+    for (const doc of Array.from(activeMounts.keys())) {
+      unmountNumpadInDoc(doc);
     }
     return;
   }
 
-  const modal = findFamilyViewModal();
-  if (modal) {
-    if (!activeInstance || activeInstance.modal !== modal || !document.body.contains(activeInstance.container)) {
-      mountNumpad(modal);
+  const windows = getAllSteamWindows();
+  for (const win of windows) {
+    const doc = win?.document;
+    if (!doc || !doc.body) continue;
+
+    // Ensure MutationObserver is attached to this document
+    if (!activeObservers.has(doc)) {
+      const obs = new MutationObserver(() => {
+        const modal = findFamilyViewModalInDoc(doc);
+        if (modal) {
+          const mount = activeMounts.get(doc);
+          if (!mount || mount.modal !== modal || !doc.body.contains(mount.container)) {
+            mountNumpadInDoc(doc, modal);
+          }
+        } else {
+          const mount = activeMounts.get(doc);
+          if (mount && !doc.body.contains(mount.modal)) {
+            unmountNumpadInDoc(doc);
+          }
+        }
+      });
+
+      obs.observe(doc.body, { childList: true, subtree: true });
+      activeObservers.set(doc, obs);
     }
-  } else {
-    if (activeInstance && !document.body.contains(activeInstance.modal)) {
-      unmountNumpad();
+
+    // Check modal presence now
+    const modal = findFamilyViewModalInDoc(doc);
+    if (modal) {
+      const mount = activeMounts.get(doc);
+      if (!mount || mount.modal !== modal || !doc.body.contains(mount.container)) {
+        mountNumpadInDoc(doc, modal);
+      }
+    } else {
+      const mount = activeMounts.get(doc);
+      if (mount && !doc.body.contains(mount.modal)) {
+        unmountNumpadInDoc(doc);
+      }
     }
   }
 
-  // Also trigger scan in Steam tabs (SP / GamepadUI)
+  // Also trigger tab-level injection
   scanInSteamTabs();
 }
 
 /**
- * Starts observing DOM changes and injects into Steam tabs.
+ * Starts observing DOM changes across all Steam windows and tabs.
  */
 export function startObserver(): void {
-  if (mutationObserver) {
-    mutationObserver.disconnect();
-  }
-
   // 1. Inject into Steam tabs (SP / Main Window)
   injectIntoSteamTabs();
 
@@ -208,46 +271,54 @@ export function startObserver(): void {
   settingsUnsubscribe = subscribeSettings((settings) => {
     updateSettingsInSteamTabs(settings);
     if (!settings.enabled) {
-      unmountNumpad();
-    } else {
-      checkAndInject();
-    }
-  });
-
-  // 3. Local MutationObserver (for preview / single window fallback)
-  mutationObserver = new MutationObserver((mutations) => {
-    let shouldCheck = false;
-    for (const mutation of mutations) {
-      if (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0) {
-        shouldCheck = true;
-        break;
+      for (const doc of Array.from(activeMounts.keys())) {
+        unmountNumpadInDoc(doc);
       }
-    }
-    if (shouldCheck) {
-      checkAndInject();
+    } else {
+      scanAndInjectAllDocuments();
     }
   });
 
-  mutationObserver.observe(document.body, {
-    childList: true,
-    subtree: true,
-  });
+  // 3. Scan all discovered documents immediately
+  scanAndInjectAllDocuments();
 
-  checkAndInject();
+  // 4. Periodically refresh windows list
+  if (pollInterval) {
+    clearInterval(pollInterval);
+  }
+  pollInterval = setInterval(scanAndInjectAllDocuments, 1500);
 }
 
 /**
  * Stops observing DOM and cleans up all active instances and subscriptions.
  */
 export function stopObserver(): void {
-  if (mutationObserver) {
-    mutationObserver.disconnect();
-    mutationObserver = null;
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
   }
   if (settingsUnsubscribe) {
     settingsUnsubscribe();
     settingsUnsubscribe = null;
   }
-  unmountNumpad();
+
+  for (const obs of Array.from(activeObservers.values())) {
+    obs.disconnect();
+  }
+  activeObservers.clear();
+
+  for (const doc of Array.from(activeMounts.keys())) {
+    unmountNumpadInDoc(doc);
+  }
+  activeMounts.clear();
+
   cleanupInSteamTabs();
 }
+
+/**
+ * Aliases for backwards compatibility and manual trigger
+ */
+export const checkAndInject = scanAndInjectAllDocuments;
+export const findFamilyViewModal = () => findFamilyViewModalInDoc(typeof document !== "undefined" ? document : (null as any));
+export const mountNumpad = (modal: HTMLElement) => mountNumpadInDoc(modal?.ownerDocument || document, modal);
+export const unmountNumpad = () => unmountNumpadInDoc(typeof document !== "undefined" ? document : (null as any));

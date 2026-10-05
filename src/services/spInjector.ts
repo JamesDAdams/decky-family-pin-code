@@ -22,7 +22,7 @@ export function generateInjectedScript(settings: PluginSettings): string {
   let currentSettings = ${JSON.stringify(settings)};
   let activeContainer = null;
   let activeModal = null;
-  let currentDigitCount = 0;
+  let currentPin = "";
   let observer = null;
 
   const CONTAINER_ID = "decky-family-view-numpad-container";
@@ -147,12 +147,28 @@ export function generateInjectedScript(settings: PluginSettings): string {
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  async function tryUnlockParental(pin) {
+    if (window.SteamClient && window.SteamClient.Parental && window.SteamClient.Parental.UnlockParentalLock) {
+      try {
+        const res = await window.SteamClient.Parental.UnlockParentalLock(pin, true);
+        if (res === 1) {
+          return true;
+        }
+      } catch (e) {
+        console.warn("[FamilyViewNumpad] UnlockParentalLock failed:", e);
+      }
+    }
+    return false;
+  }
+
   function handleDigitPress(digit) {
     triggerHaptic();
     const digitStr = String(digit);
     const keyCode = 48 + parseInt(digitStr, 10);
     const code = "Digit" + digitStr;
     const modal = activeModal || document.body;
+
+    currentPin = currentPin.length >= 4 ? digitStr : currentPin + digitStr;
 
     const inputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="password"], input[type="number"], input:not([type])'));
     if (inputs.length === 1) {
@@ -176,20 +192,23 @@ export function generateInjectedScript(settings: PluginSettings): string {
     if (modal !== activeEl) dispatchKey(modal, digitStr, code, keyCode);
     dispatchKey(window, digitStr, code, keyCode);
 
-    currentDigitCount = (currentDigitCount % 4) + 1;
-    if (currentSettings.autoSubmitOn4Digits && currentDigitCount === 4) {
-      setTimeout(() => {
-        handleConfirmPress();
-        currentDigitCount = 0;
-      }, 150);
+    if (currentPin.length === 4) {
+      tryUnlockParental(currentPin);
+      if (currentSettings.autoSubmitOn4Digits) {
+        setTimeout(() => {
+          handleConfirmPress();
+          currentPin = "";
+        }, 150);
+      }
     }
   }
 
   function handleBackspacePress() {
     triggerHaptic();
     const modal = activeModal || document.body;
-    const inputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="password"], input[type="number"], input:not([type])'));
+    currentPin = currentPin.slice(0, -1);
 
+    const inputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="password"], input[type="number"], input:not([type])'));
     if (inputs.length === 1) {
       const inp = inputs[0];
       inp.focus();
@@ -214,13 +233,13 @@ export function generateInjectedScript(settings: PluginSettings): string {
     dispatchKey(activeEl, "Backspace", "Backspace", 8);
     if (modal !== activeEl) dispatchKey(modal, "Backspace", "Backspace", 8);
     dispatchKey(window, "Backspace", "Backspace", 8);
-
-    currentDigitCount = Math.max(0, currentDigitCount - 1);
   }
 
   function handleClearPress() {
     triggerHaptic();
     const modal = activeModal || document.body;
+    currentPin = "";
+
     const inputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="password"], input[type="number"], input:not([type])'));
     inputs.forEach(i => setInputValue(i, ""));
     if (inputs.length > 0) inputs[0].focus();
@@ -228,12 +247,16 @@ export function generateInjectedScript(settings: PluginSettings): string {
     for (let i = 0; i < 4; i++) {
       dispatchKey(modal, "Backspace", "Backspace", 8);
     }
-    currentDigitCount = 0;
   }
 
-  function handleConfirmPress() {
+  async function handleConfirmPress() {
     triggerHaptic();
     const modal = activeModal || document.body;
+
+    if (currentPin.length === 4) {
+      await tryUnlockParental(currentPin);
+    }
+
     const buttons = Array.from(modal.querySelectorAll("button, div[role='button']"));
     const confirmBtn = buttons.find(b => {
       const t = (b.innerText || b.textContent || "").toLowerCase().trim();
@@ -253,15 +276,16 @@ export function generateInjectedScript(settings: PluginSettings): string {
     if (!el || !(el instanceof HTMLElement)) return false;
     const text = (el.innerText || el.textContent || "").toLowerCase();
 
+    const isClassMatch = el.className && typeof el.className === "string" && (el.className.includes("ParentalPINDialog") || el.className.includes("DigitInputField"));
     const hasFamily = text.includes("family view") || text.includes("mode famille") || text.includes("parental") || text.includes("famille");
     const hasPin = text.includes("pin") || text.includes("enter") || text.includes("entrer") || text.includes("exit") || text.includes("quitter");
-    const hasPinBoxes = el.querySelectorAll('input, [class*="PinDigit"], [class*="pin_digit"]').length >= 1;
+    const hasPinBoxes = el.querySelectorAll('input, [class*="PinDigit"], [class*="pin_digit"], [class*="DigitInputField"]').length >= 1;
 
-    return (hasFamily && (hasPin || hasPinBoxes));
+    return isClassMatch || (hasFamily && (hasPin || hasPinBoxes));
   }
 
   function findModal() {
-    const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], div[class*="DialogContent"], div[class*="ModalPosition"], div[class*="Modal_"], div[class*="Dialog_"], div[class*="PinDialog"], div[class*="Parental"], .DialogControlsSection, .DialogContent'));
+    const dialogs = Array.from(document.querySelectorAll('div[class*="ParentalPINDialog"], div[class*="DigitInputField"], div[role="dialog"], div[class*="DialogContent"], div[class*="ModalPosition"], div[class*="Modal_"], div[class*="Dialog_"], div[class*="PinDialog"], div[class*="Parental"], .DialogControlsSection, .DialogContent'));
     for (const d of dialogs) {
       if (isModalFamilyView(d)) {
         return d.closest('div[role="dialog"], div[class*="Modal_"], div[class*="Dialog_"]') || d;
@@ -341,7 +365,7 @@ export function generateInjectedScript(settings: PluginSettings): string {
 
     // Insertion
     const buttonsSec = modal.querySelector('div[class*="DialogControlsSection"], div[class*="DialogFooter"], div[class*="ButtonsRow"], div[class*="ModalFooter"]');
-    const inputsSec = modal.querySelector('div[class*="PinEntry"], div[class*="PinInput"], div[class*="InputsRow"], div[class*="DialogBody"]');
+    const inputsSec = modal.querySelector('div[class*="PinEntry"], div[class*="PinInput"], div[class*="DigitInputField"], div[class*="InputsRow"], div[class*="DialogBody"]');
 
     if (buttonsSec && buttonsSec.parentNode) {
       buttonsSec.parentNode.insertBefore(container, buttonsSec);
@@ -353,7 +377,7 @@ export function generateInjectedScript(settings: PluginSettings): string {
 
     activeContainer = container;
     activeModal = modal;
-    currentDigitCount = 0;
+    currentPin = "";
   }
 
   function unmountDOM() {
@@ -366,7 +390,7 @@ export function generateInjectedScript(settings: PluginSettings): string {
     }
     activeContainer = null;
     activeModal = null;
-    currentDigitCount = 0;
+    currentPin = "";
   }
 
   function scanAndInject() {

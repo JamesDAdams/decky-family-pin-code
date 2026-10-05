@@ -5,6 +5,7 @@ import {
   sendBackspace,
   sendClear,
   sendConfirm,
+  unlockWithParentalAPI,
 } from "../services/inputSimulator";
 import { getSettings, subscribeSettings, PluginSettings } from "../services/settings";
 
@@ -28,7 +29,7 @@ export const Numpad: FC<NumpadProps> = ({
   const [settings, setSettings] = useState<PluginSettings>(getSettings());
   const [pressedKey, setPressedKey] = useState<string | null>(null);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
-  const [digitCount, setDigitCount] = useState<number>(0);
+  const [enteredPin, setEnteredPin] = useState<string>("");
 
   useEffect(() => {
     return subscribeSettings((newSettings) => {
@@ -47,30 +48,37 @@ export const Numpad: FC<NumpadProps> = ({
   }, [settings.hapticFeedback]);
 
   const handleDigit = useCallback(
-    (digit: number) => {
+    async (digit: number) => {
       triggerHaptic();
       setPressedKey(String(digit));
       setTimeout(() => setPressedKey(null), 120);
 
-      const nextCount = (digitCount % 4) + 1;
-      setDigitCount(nextCount);
+      const nextPin = enteredPin.length >= 4 ? String(digit) : enteredPin + digit;
+      setEnteredPin(nextPin);
 
       if (!isPreview) {
         sendDigit(digit, modalElement);
       }
       onDigitPress?.(digit);
 
-      if (settings.autoSubmitOn4Digits && nextCount === 4) {
-        setTimeout(() => {
-          if (!isPreview) {
-            sendConfirm(modalElement);
-          }
-          onConfirmPress?.();
-          setDigitCount(0);
-        }, 150);
+      if (nextPin.length === 4) {
+        if (!isPreview) {
+          // Attempt native Steam Parental unlock
+          unlockWithParentalAPI(nextPin);
+        }
+
+        if (settings.autoSubmitOn4Digits) {
+          setTimeout(() => {
+            if (!isPreview) {
+              sendConfirm(modalElement);
+            }
+            onConfirmPress?.();
+            setEnteredPin("");
+          }, 150);
+        }
       }
     },
-    [digitCount, modalElement, onDigitPress, onConfirmPress, isPreview, settings.autoSubmitOn4Digits, triggerHaptic]
+    [enteredPin, modalElement, onDigitPress, onConfirmPress, isPreview, settings.autoSubmitOn4Digits, triggerHaptic]
   );
 
   const handleBackspace = useCallback(() => {
@@ -78,7 +86,7 @@ export const Numpad: FC<NumpadProps> = ({
     setPressedKey("backspace");
     setTimeout(() => setPressedKey(null), 120);
 
-    setDigitCount((prev) => Math.max(0, prev - 1));
+    setEnteredPin((prev) => prev.slice(0, -1));
 
     if (!isPreview) {
       sendBackspace(modalElement);
@@ -91,7 +99,7 @@ export const Numpad: FC<NumpadProps> = ({
     setPressedKey("clear");
     setTimeout(() => setPressedKey(null), 120);
 
-    setDigitCount(0);
+    setEnteredPin("");
 
     if (!isPreview) {
       sendClear(modalElement);
@@ -99,16 +107,19 @@ export const Numpad: FC<NumpadProps> = ({
     onClearPress?.();
   }, [modalElement, onClearPress, isPreview, triggerHaptic]);
 
-  const handleConfirm = useCallback(() => {
+  const handleConfirm = useCallback(async () => {
     triggerHaptic();
     setPressedKey("confirm");
     setTimeout(() => setPressedKey(null), 120);
 
     if (!isPreview) {
+      if (enteredPin.length === 4) {
+        await unlockWithParentalAPI(enteredPin);
+      }
       sendConfirm(modalElement);
     }
     onConfirmPress?.();
-  }, [modalElement, onConfirmPress, isPreview, triggerHaptic]);
+  }, [enteredPin, modalElement, onConfirmPress, isPreview, triggerHaptic]);
 
   const buttonSizeStyle = () => {
     switch (settings.buttonSize) {
