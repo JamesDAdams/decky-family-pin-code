@@ -2,6 +2,12 @@ import { createRoot, Root } from "react-dom/client";
 import { Numpad } from "../components/Numpad";
 import { getSettings, subscribeSettings } from "./settings";
 import { isDeckyUIElement } from "./inputSimulator";
+import {
+  injectIntoSteamTabs,
+  scanInSteamTabs,
+  updateSettingsInSteamTabs,
+  cleanupInSteamTabs,
+} from "./spInjector";
 
 const CONTAINER_ID = "decky-family-view-numpad-container";
 
@@ -20,8 +26,6 @@ let settingsUnsubscribe: (() => void) | null = null;
  */
 export function isFamilyViewModal(el: HTMLElement): boolean {
   if (!el || !(el instanceof HTMLElement)) return false;
-
-  // Filter out any Decky QAM or preview elements to avoid false positives
   if (isDeckyUIElement(el)) return false;
 
   const text = (el.innerText || el.textContent || "").toLowerCase();
@@ -30,7 +34,8 @@ export function isFamilyViewModal(el: HTMLElement): boolean {
     text.includes("family view") ||
     text.includes("mode famille") ||
     text.includes("parental") ||
-    text.includes("contrôle parental");
+    text.includes("contrôle parental") ||
+    text.includes("famille");
 
   const hasPinKeyword =
     text.includes("pin") ||
@@ -38,10 +43,12 @@ export function isFamilyViewModal(el: HTMLElement): boolean {
     text.includes("entrez votre pin") ||
     text.includes("code pin") ||
     text.includes("exit family view") ||
-    text.includes("quitter le mode famille");
+    text.includes("quitter le mode famille") ||
+    text.includes("enter") ||
+    text.includes("entrer");
 
   const hasPinBoxes =
-    el.querySelectorAll('input[type="text"], input[type="password"], input[type="number"], input:not([type]), [class*="PinDigit"]').length >= 1;
+    el.querySelectorAll('input[type="text"], input[type="password"], input[type="number"], input:not([type]), [class*="PinDigit"], [class*="pin_digit"]').length >= 1;
 
   return (hasFamilyKeyword && hasPinKeyword) || (hasFamilyKeyword && hasPinBoxes);
 }
@@ -76,7 +83,6 @@ export function findFamilyViewModal(): HTMLElement | null {
     }
   }
 
-  // Fallback: check all visible floating modals
   const popups = Array.from(document.querySelectorAll<HTMLElement>("body > div, #root > div"));
   for (const popup of popups) {
     if (isDeckyUIElement(popup)) continue;
@@ -97,17 +103,14 @@ export function mountNumpad(modal: HTMLElement): void {
     return;
   }
 
-  // Check if already mounted
   if (modal.querySelector(`#${CONTAINER_ID}`)) {
     return;
   }
 
-  // If another instance is active, clean it up
   if (activeInstance) {
     unmountNumpad();
   }
 
-  // Create injection wrapper
   const container = document.createElement("div");
   container.id = CONTAINER_ID;
   container.style.width = "100%";
@@ -117,7 +120,6 @@ export function mountNumpad(modal: HTMLElement): void {
   container.style.marginTop = "8px";
   container.style.marginBottom = "8px";
 
-  // Find the best place inside the modal to insert the numpad
   const buttonsSection = modal.querySelector<HTMLElement>(
     'div[class*="DialogControlsSection"], div[class*="DialogFooter"], div[class*="ButtonsRow"], div[class*="ModalFooter"]'
   );
@@ -127,13 +129,10 @@ export function mountNumpad(modal: HTMLElement): void {
   );
 
   if (buttonsSection && buttonsSection.parentNode) {
-    // Insert just before the Confirm/Cancel buttons row
     buttonsSection.parentNode.insertBefore(container, buttonsSection);
   } else if (inputsSection && inputsSection.parentNode) {
-    // Insert right after the PIN boxes
     inputsSection.parentNode.insertBefore(container, inputsSection.nextSibling);
   } else {
-    // Append to modal directly
     modal.appendChild(container);
   }
 
@@ -186,21 +185,28 @@ export function checkAndInject(): void {
       unmountNumpad();
     }
   }
+
+  // Also trigger scan in Steam tabs (SP / GamepadUI)
+  scanInSteamTabs();
 }
 
 /**
- * Starts observing DOM changes to automatically inject numpad when Family View modal opens.
+ * Starts observing DOM changes and injects into Steam tabs.
  */
 export function startObserver(): void {
   if (mutationObserver) {
     mutationObserver.disconnect();
   }
 
-  // Subscribe to settings changes so enable/disable toggle immediately takes effect
+  // 1. Inject into Steam tabs (SP / Main Window)
+  injectIntoSteamTabs();
+
+  // 2. Subscribe to settings changes
   if (settingsUnsubscribe) {
     settingsUnsubscribe();
   }
   settingsUnsubscribe = subscribeSettings((settings) => {
+    updateSettingsInSteamTabs(settings);
     if (!settings.enabled) {
       unmountNumpad();
     } else {
@@ -208,6 +214,7 @@ export function startObserver(): void {
     }
   });
 
+  // 3. Local MutationObserver (for preview / single window fallback)
   mutationObserver = new MutationObserver((mutations) => {
     let shouldCheck = false;
     for (const mutation of mutations) {
@@ -226,7 +233,6 @@ export function startObserver(): void {
     subtree: true,
   });
 
-  // Initial check
   checkAndInject();
 }
 
@@ -243,4 +249,5 @@ export function stopObserver(): void {
     settingsUnsubscribe = null;
   }
   unmountNumpad();
+  cleanupInSteamTabs();
 }

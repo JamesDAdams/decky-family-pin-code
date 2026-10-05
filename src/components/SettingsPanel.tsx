@@ -15,6 +15,7 @@ import {
   PluginSettings,
 } from "../services/settings";
 import { checkAndInject } from "../services/observer";
+import { injectIntoSteamTabs, scanInSteamTabs } from "../services/spInjector";
 import { NumpadModalPreview } from "./NumpadModalPreview";
 
 export const SettingsPanel: FC = () => {
@@ -53,11 +54,13 @@ export const SettingsPanel: FC = () => {
     saveSettings({ buttonSize: option.data as "small" | "medium" | "large" });
   };
 
-  const handleManualScan = () => {
+  const handleManualScan = async () => {
+    await injectIntoSteamTabs(settings);
+    await scanInSteamTabs();
     checkAndInject();
     toaster.toast({
       title: "Family View Numpad",
-      body: "Scanning for Family View modal...",
+      body: "Scanning for Family View modal in Steam...",
     });
   };
 
