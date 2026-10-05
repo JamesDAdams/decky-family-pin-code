@@ -8,6 +8,8 @@ declare global {
       Parental?: {
         UnlockParentalLock: (pin: string, remember: boolean) => Promise<number>;
         LockParentalLock: () => Promise<number>;
+        RegisterForParentalSettingsChanges?: (cb: (data: any) => void) => { unregister: () => void };
+        GetParentalSettings?: () => Promise<any>;
       };
       User?: any;
     };
@@ -23,7 +25,10 @@ export function isDeckyUIElement(el: HTMLElement | null): boolean {
   );
 }
 
-export function getParentalAPI(): { UnlockParentalLock: (pin: string, remember: boolean) => Promise<number> } | null {
+export function getParentalAPI(): {
+  UnlockParentalLock: (pin: string, remember: boolean) => Promise<number>;
+  LockParentalLock?: () => Promise<number>;
+} | null {
   const win = typeof window !== "undefined" ? window : null;
   if (win?.SteamClient?.Parental) {
     return win.SteamClient.Parental;
@@ -83,39 +88,72 @@ export function dispatchKeyEvent(
 }
 
 export function getFamilyViewModalContainer(rootDoc: Document = document): HTMLElement | null {
+  if (!rootDoc || !rootDoc.body) return null;
+
+  // 1. Text search across all text-bearing elements
+  const allElements = Array.from(
+    rootDoc.querySelectorAll<HTMLElement>("h1, h2, h3, h4, div, span, p, label, b, strong")
+  );
+
+  for (const el of allElements) {
+    if (isDeckyUIElement(el)) continue;
+
+    const text = (el.innerText || el.textContent || "").trim();
+    if (!text || text.length > 80) continue;
+
+    const lower = text.toLowerCase();
+    const isFamilyViewTitle =
+      lower === "family view" ||
+      lower === "mode famille" ||
+      lower === "parental lock" ||
+      lower.includes("exit family view") ||
+      lower.includes("quitter le mode famille") ||
+      lower.includes("enter your pin") ||
+      lower.includes("entrez votre code pin");
+
+    if (isFamilyViewTitle) {
+      let current: HTMLElement | null = el;
+      let bestDialog: HTMLElement | null = null;
+
+      while (current && current !== rootDoc.body && current !== rootDoc.documentElement) {
+        if (
+          current.getAttribute("role") === "dialog" ||
+          (current.className &&
+            typeof current.className === "string" &&
+            (current.className.includes("ModalPosition") ||
+              current.className.includes("DialogContent") ||
+              current.className.includes("Modal_") ||
+              current.className.includes("Dialog_") ||
+              current.className.includes("ParentalPINDialog")))
+        ) {
+          bestDialog = current;
+          break;
+        }
+
+        if (current.querySelectorAll("input, button").length >= 2) {
+          bestDialog = current;
+        }
+
+        current = current.parentElement;
+      }
+
+      if (bestDialog && !isDeckyUIElement(bestDialog)) {
+        return bestDialog;
+      }
+    }
+  }
+
+  // 2. Class/selector matching fallback
   const candidates = Array.from(
     rootDoc.querySelectorAll<HTMLElement>(
-      'div[class*="ParentalPINDialog"], div[class*="DigitInputField"], div[class*="Dialog"], div[class*="Modal"], div[class*="familyview"], div[role="dialog"], .DialogContent, .ModalPosition, .DialogControlsSection'
+      'div[class*="ParentalPINDialog"], div[class*="DigitInputField"], div[role="dialog"], .DialogContent, .ModalPosition, .DialogControlsSection'
     )
   );
 
   for (const el of candidates) {
     if (isDeckyUIElement(el)) continue;
-
     const text = (el.innerText || el.textContent || "").toLowerCase();
-    const isClassMatch =
-      el.className &&
-      typeof el.className === "string" &&
-      (el.className.includes("ParentalPINDialog") || el.className.includes("DigitInputField"));
-
-    const hasFamilyText =
-      text.includes("family view") ||
-      text.includes("mode famille") ||
-      text.includes("parental") ||
-      text.includes("contrôle parental") ||
-      text.includes("famille");
-
-    const hasPinText =
-      text.includes("pin") ||
-      text.includes("enter") ||
-      text.includes("entrer") ||
-      text.includes("exit") ||
-      text.includes("quitter");
-
-    const hasPinBoxes =
-      el.querySelectorAll('input, [class*="PinDigit"], [class*="pin_digit"], [class*="DigitInputField"]').length >= 1;
-
-    if (isClassMatch || (hasFamilyText && (hasPinText || hasPinBoxes))) {
+    if (text.includes("pin") || text.includes("family") || text.includes("famille")) {
       const dialog =
         el.closest<HTMLElement>('div[role="dialog"], div[class*="Modal_"], div[class*="Dialog_"]') || el;
       if (!isDeckyUIElement(dialog)) {

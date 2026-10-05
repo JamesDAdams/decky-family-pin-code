@@ -1,6 +1,6 @@
 {
   "name": "family-view-numpad",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Decky Loader plugin providing a virtual numpad on the Family View PIN dialog for SteamOS",
   "type": "module",
   "scripts": {

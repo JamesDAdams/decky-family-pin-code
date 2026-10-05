@@ -1,4 +1,4 @@
-import { FC, useState, useEffect } from "react";
+import { FC, useState, useEffect, useCallback } from "react";
 import {
   PanelSection,
   PanelSectionRow,
@@ -16,11 +16,14 @@ import {
 } from "../services/settings";
 import { checkAndInject } from "../services/observer";
 import { injectIntoSteamTabs, scanInSteamTabs } from "../services/spInjector";
+import { getParentalAPI, unlockWithParentalAPI } from "../services/inputSimulator";
 import { NumpadModalPreview } from "./NumpadModalPreview";
+import { Numpad } from "./Numpad";
 
 export const SettingsPanel: FC = () => {
   const [settings, setSettings] = useState<PluginSettings>(getSettings());
   const [showPreview, setShowPreview] = useState<boolean>(false);
+  const [quickPin, setQuickPin] = useState<string>("");
 
   useEffect(() => {
     return subscribeSettings((newSettings) => {
@@ -60,16 +63,133 @@ export const SettingsPanel: FC = () => {
     checkAndInject();
     toaster.toast({
       title: "Family View Numpad",
-      body: "Scanning for Family View modal in Steam...",
+      body: "Scanned all Steam windows & injected keypad.",
     });
+  };
+
+  const handleQuickUnlockDigit = useCallback(
+    async (digit: number) => {
+      const nextPin = quickPin.length >= 4 ? String(digit) : quickPin + digit;
+      setQuickPin(nextPin);
+
+      if (nextPin.length === 4) {
+        const success = await unlockWithParentalAPI(nextPin);
+        if (success) {
+          toaster.toast({
+            title: "Family View",
+            body: "Family View successfully unlocked!",
+          });
+          setQuickPin("");
+        } else {
+          toaster.toast({
+            title: "Family View",
+            body: "Incorrect PIN or unlock failed.",
+          });
+          setQuickPin("");
+        }
+      }
+    },
+    [quickPin]
+  );
+
+  const handleQuickUnlockConfirm = useCallback(async () => {
+    if (quickPin.length === 4) {
+      const success = await unlockWithParentalAPI(quickPin);
+      if (success) {
+        toaster.toast({
+          title: "Family View",
+          body: "Family View successfully unlocked!",
+        });
+      } else {
+        toaster.toast({
+          title: "Family View",
+          body: "Incorrect PIN or unlock failed.",
+        });
+      }
+      setQuickPin("");
+    } else {
+      toaster.toast({
+        title: "Family View",
+        body: "Please enter a 4-digit PIN.",
+      });
+    }
+  }, [quickPin]);
+
+  const handleLockParental = async () => {
+    const api = getParentalAPI();
+    if (api?.LockParentalLock) {
+      try {
+        await api.LockParentalLock();
+        toaster.toast({
+          title: "Family View",
+          body: "Family View locked.",
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    }
   };
 
   return (
     <div>
+      <PanelSection title="Quick PIN Unlocker">
+        <PanelSectionRow>
+          <div style={{ color: "rgba(255, 255, 255, 0.7)", fontSize: "13px", marginBottom: "6px" }}>
+            Unlock Family View directly from this menu:
+          </div>
+        </PanelSectionRow>
+
+        <PanelSectionRow>
+          <div style={{ display: "flex", justifyContent: "center", gap: "10px", margin: "8px 0" }}>
+            {[0, 1, 2, 3].map((idx) => {
+              const isFilled = idx < quickPin.length;
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    width: "36px",
+                    height: "44px",
+                    borderRadius: "6px",
+                    backgroundColor: isFilled ? "rgba(26, 159, 255, 0.25)" : "rgba(255, 255, 255, 0.08)",
+                    borderWidth: isFilled ? "2px" : "1px",
+                    borderStyle: "solid",
+                    borderColor: isFilled ? "#1a9fff" : "rgba(255, 255, 255, 0.2)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "22px",
+                    fontWeight: "bold",
+                    color: "#ffffff",
+                  }}
+                >
+                  {isFilled ? "●" : ""}
+                </div>
+              );
+            })}
+          </div>
+        </PanelSectionRow>
+
+        <PanelSectionRow>
+          <Numpad
+            isPreview={true}
+            onDigitPress={handleQuickUnlockDigit}
+            onBackspacePress={() => setQuickPin((p) => p.slice(0, -1))}
+            onClearPress={() => setQuickPin("")}
+            onConfirmPress={handleQuickUnlockConfirm}
+          />
+        </PanelSectionRow>
+
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={handleLockParental}>
+            Lock Family View
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title="Status & Activation">
         <PanelSectionRow>
           <ToggleField
-            label="Enable Virtual Numpad"
+            label="Enable Modal Keypad"
             description="Automatically display the on-screen keypad on the Family View PIN dialog"
             checked={settings.enabled}
             onChange={handleToggleEnabled}
@@ -121,7 +241,7 @@ export const SettingsPanel: FC = () => {
             layout="below"
             onClick={() => setShowPreview((prev) => !prev)}
           >
-            {showPreview ? "Hide Preview" : "Test Numpad (Interactive Preview)"}
+            {showPreview ? "Hide Preview" : "Test Modal Keypad (Preview)"}
           </ButtonItem>
         </PanelSectionRow>
 

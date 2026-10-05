@@ -4,6 +4,7 @@ import { FaKeyboard } from "react-icons/fa";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { loadSettings } from "./services/settings";
 import { startObserver, stopObserver } from "./services/observer";
+import { initParentalPatch, removeParentalPatch } from "./patches/parentalPatch";
 
 export default definePlugin(() => {
   console.log("[FamilyViewNumpad] Initializing plugin...");
@@ -11,7 +12,10 @@ export default definePlugin(() => {
   // Load saved settings
   loadSettings();
 
-  // Start DOM observer for Family View dialog
+  // 1. Initialize React tree patcher
+  initParentalPatch();
+
+  // 2. Start DOM multi-window observer
   try {
     startObserver();
   } catch (err) {
@@ -25,6 +29,7 @@ export default definePlugin(() => {
     icon: <FaKeyboard />,
     onDismount() {
       console.log("[FamilyViewNumpad] Dismounting plugin...");
+      removeParentalPatch();
       stopObserver();
     },
   };
