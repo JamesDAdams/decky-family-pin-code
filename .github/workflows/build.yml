@@ -1,0 +1,42 @@
+name: Build Decky Plugin
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run Tests
+        run: pnpm run test
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build and Package
+        run: ./package.sh
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: family-view-numpad
+          path: "*.zip"
+          retention-days: 14

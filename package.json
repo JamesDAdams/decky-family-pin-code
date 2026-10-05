@@ -16,7 +16,7 @@
     "steam-deck",
     "numpad"
   ],
-  "author": "Renaud Lefevre",
+  "author": "JamesDAdams",
   "license": "BSD-3-Clause",
   "dependencies": {
     "@decky/api": "^1.1.3",
